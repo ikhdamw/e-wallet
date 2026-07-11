@@ -1,0 +1,314 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # DATABASES
+  # ============================================
+  
+  mysql:
+    image: mysql:8.0
+    container_name: ewallet-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ewallet}
+      MYSQL_USER: ${MYSQL_USER:-ewallet}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ewallet123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./databases/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - ewallet-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb:
+    image: mongo:6
+    container_name: ewallet-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-admin123}
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE:-ewallet}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./databases/mongodb/init.js:/docker-entrypoint-initdb.d/init.js
+    networks:
+      - ewallet-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # CACHE & MESSAGE QUEUE
+  # ============================================
+  
+  redis:
+    image: redis:7-alpine
+    container_name: ewallet-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ewallet-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: ewallet-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ewallet-network
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # API GATEWAY
+  # ============================================
+  
+  traefik:
+    image: traefik:v2.10
+    container_name: ewallet-traefik
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./api-gateway/traefik.yml:/etc/traefik/traefik.yml
+    networks:
+      - ewallet-network
+
+  # ============================================
+  # MICROSERVICES
+  # ============================================
+  
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: ewallet-auth
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=${MYSQL_USER:-ewallet}
+      - DB_PASSWORD=${MYSQL_PASSWORD:-ewallet123}
+      - DB_NAME=${MYSQL_DATABASE:-ewallet}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET:-supersecretkey}
+      - PORT=8081
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
+      - "traefik.http.services.auth.loadbalancer.server.port=8081"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ewallet-network
+
+  wallet-service:
+    build:
+      context: ./services/wallet-service
+      dockerfile: Dockerfile
+    container_name: ewallet-wallet
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=${MYSQL_USER:-ewallet}
+      - DB_PASSWORD=${MYSQL_PASSWORD:-ewallet123}
+      - DB_NAME=${MYSQL_DATABASE:-ewallet}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - PORT=8082
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.wallet.rule=PathPrefix(`/api/wallet`)"
+      - "traefik.http.services.wallet.loadbalancer.server.port=8082"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - ewallet-network
+
+  transfer-service:
+    build:
+      context: ./services/transfer-service
+      dockerfile: Dockerfile
+    container_name: ewallet-transfer
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=${MYSQL_USER:-ewallet}
+      - DB_PASSWORD=${MYSQL_PASSWORD:-ewallet123}
+      - DB_NAME=${MYSQL_DATABASE:-ewallet}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - PORT=8083
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.transfer.rule=PathPrefix(`/api/transfer`)"
+      - "traefik.http.services.transfer.loadbalancer.server.port=8083"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - ewallet-network
+
+  payment-gateway:
+    build:
+      context: ./services/payment-gateway
+      dockerfile: Dockerfile
+    container_name: ewallet-payment
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=${MYSQL_USER:-ewallet}
+      - DB_PASSWORD=${MYSQL_PASSWORD:-ewallet123}
+      - DB_NAME=${MYSQL_DATABASE:-ewallet}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-sk_test_xxx}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-whsec_xxx}
+      - PORT=8084
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.payment.rule=PathPrefix(`/api/payment`)"
+      - "traefik.http.services.payment.loadbalancer.server.port=8084"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - ewallet-network
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: ewallet-notification
+    environment:
+      - MONGO_HOST=mongodb
+      - MONGO_PORT=27017
+      - MONGO_USER=${MONGO_USERNAME:-admin}
+      - MONGO_PASSWORD=${MONGO_PASSWORD:-admin123}
+      - MONGO_DATABASE=${MONGO_DATABASE:-ewallet}
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - PORT=8085
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.notification.rule=PathPrefix(`/api/notifications`)"
+      - "traefik.http.services.notification.loadbalancer.server.port=8085"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - ewallet-network
+
+  ledger-service:
+    build:
+      context: ./services/ledger-service
+      dockerfile: Dockerfile
+    container_name: ewallet-ledger
+    environment:
+      - MONGO_HOST=mongodb
+      - MONGO_PORT=27017
+      - MONGO_USER=${MONGO_USERNAME:-admin}
+      - MONGO_PASSWORD=${MONGO_PASSWORD:-admin123}
+      - MONGO_DATABASE=${MONGO_DATABASE:-ewallet}
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - PORT=8086
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ledger.rule=PathPrefix(`/api/ledger`)"
+      - "traefik.http.services.ledger.loadbalancer.server.port=8086"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - ewallet-network
+
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+      dockerfile: Dockerfile
+    container_name: ewallet-analytics
+    environment:
+      - MONGO_HOST=mongodb
+      - MONGO_PORT=27017
+      - MONGO_USER=${MONGO_USERNAME:-admin}
+      - MONGO_PASSWORD=${MONGO_PASSWORD:-admin123}
+      - MONGO_DATABASE=${MONGO_DATABASE:-ewallet}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PORT=8087
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.analytics.rule=PathPrefix(`/api/analytics`)"
+      - "traefik.http.services.analytics.loadbalancer.server.port=8087"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ewallet-network
+
+# ============================================
+# VOLUMES
+# ============================================
+volumes:
+  mysql_data:
+  mongo_data:
+  redis_data:
+  rabbitmq_data:
+
+# ============================================
+# NETWORKS
+# ============================================
+networks:
+  ewallet-network:
+    driver: bridge
