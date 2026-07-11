@@ -1,0 +1,156 @@
+name: pr-review-flow
+version: 2.0.0
+description: "Smart PR Review Flow - Based on Change Size"
+author: Hermes Agent
+
+# ============================================
+# MODELS BY ROLE
+# ============================================
+models:
+  junior_dev: "north-mini-code-free"
+  senior_dev: "mimo-v2.5-free"
+  tech_lead: "minimax-m3-free"
+  cto: "qwen3.6-plus-free"
+
+# ============================================
+# CHANGE SIZE DETECTION
+# ============================================
+change_size:
+  small:
+    keywords:
+      - "fix"
+      - "typo"
+      - "update"
+      - "rename"
+      - "format"
+      - "lint"
+      - "config"
+    file_count: "< 5 files"
+    lines_changed: "< 100 lines"
+    review_chain: ["senior_dev"]
+  
+  medium:
+    keywords:
+      - "add"
+      - "feature"
+      - "refactor"
+      - "optimize"
+    file_count: "5-20 files"
+    lines_changed: "100-500 lines"
+    review_chain: ["senior_dev", "tech_lead"]
+  
+  large:
+    keywords:
+      - "service"
+      - "module"
+      - "microservice"
+      - "architecture"
+      - "migration"
+      - "breaking"
+    file_count: "> 20 files"
+    lines_changed: "> 500 lines"
+    review_chain: ["senior_dev", "tech_lead", "cto"]
+
+# ============================================
+# REVIEW FLOW
+# ============================================
+flow:
+  # Step 0: Junior Dev Create PR
+  0_create_pr:
+    role: "junior_dev"
+    action: "Create PR with description"
+    output: "PR created"
+    next: "detect_change_size"
+
+  # Step 1: Detect Change Size
+  detect_change_size:
+    action: "Analyze PR"
+    checks:
+      - count_files_changed
+      - count_lines_changed
+      - check_keywords_in_title
+    output: "small | medium | large"
+
+  # Step 2: Senior Dev Review (ALL)
+  senior_review:
+    role: "senior_dev"
+    model: "mimo-v2.5-free"
+    action: "Review code"
+    checklist:
+      - "Code quality"
+      - "Best practices"
+      - "Error handling"
+      - "Naming conventions"
+      - "Test coverage"
+    decision:
+      approved:
+        small: "MERGE"
+        medium: "Pass to Tech Lead"
+        large: "Pass to Tech Lead"
+      rejected:
+        action: "Return to Junior Dev"
+        feedback: "Specific issues to fix"
+        next: "0_create_pr"
+
+  # Step 3: Tech Lead Review (Medium & Large)
+  tech_lead_review:
+    role: "tech_lead"
+    model: "minimax-m3-free"
+    action: "Review architecture"
+    checklist:
+      - "Architecture patterns"
+      - "Scalability"
+      - "Performance"
+      - "Security"
+      - "Documentation"
+    decision:
+      approved:
+        medium: "MERGE"
+        large: "Pass to CTO"
+      rejected:
+        action: "Return to Senior Dev"
+        feedback: "Architecture concerns"
+        next: "senior_review"
+
+  # Step 4: CTO Review (Large Only)
+  cto_review:
+    role: "cto"
+    model: "qwen3.6-plus-free"
+    action: "Final approval"
+    checklist:
+      - "Business alignment"
+      - "Strategic fit"
+      - "Resource allocation"
+      - "Risk assessment"
+      - "Long-term impact"
+    decision:
+      approved:
+        action: "MERGE"
+        message: "🎉 PR Approved & Merged!"
+      rejected:
+        action: "Return to Tech Lead"
+        feedback: "Strategic concerns"
+        next: "tech_lead_review"
+
+# ============================================
+# LOOP RULES
+# ============================================
+loop_rules:
+  max_retries: 3
+  feedback_required: true
+  auto_merge_on_approval: false
+  escalation_on_timeout: true
+  timeout_hours: 24
+
+# ============================================
+# SUMMARY
+# ============================================
+summary: |
+  Small Change (fix, typo, <100 lines):
+    Junior Dev → Senior Dev → MERGE
+  
+  Medium Change (feature, 100-500 lines):
+    Junior Dev → Senior Dev → Tech Lead → MERGE
+  
+  Large Change (new service, >500 lines):
+    Junior Dev → Senior Dev → Tech Lead → CTO → MERGE
