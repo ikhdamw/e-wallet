@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transfer-service
+  namespace: ewallet
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: transfer-service
+  template:
+    metadata:
+      labels:
+        app: transfer-service
+    spec:
+      containers:
+      - name: transfer-service
+        image: ewallet-transfer-service:latest
+        ports:
+        - containerPort: 8083
